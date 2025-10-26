@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 
-# Author: Daniel Escanez-Exposito
+# Author: Francesco Fiorini francesco.fiorini@phd.unipi.it
+# Credits: Daniel Escanez-Exposito (https://github.com/jdanielescanez/quantum-solver)
 
 from abc import ABC, abstractmethod
 
+from qiskit import QuantumCircuit
 from numpy.random import randint
 from math import ceil
 
-## An abstract class of a participant entity in the BB84 implementation
-## @see https://qiskit.org/textbook/ch-algorithms/quantum-key-distribution.html
+
 class Participant(ABC):
   ## Constructor
   @abstractmethod
@@ -46,21 +47,25 @@ class Participant(ABC):
   def show_values(self):
     print('\n' + self.name, 'Values:')
     print(self.values)
+    return self.values
 
   ## Print axes
   def show_axes(self):
     print('\n' + self.name, 'Axes:')
     print(self.axes)
+    return self.axes
   
   ## Print key
   def show_key(self):
     print('\n' + self.name, 'Key:')
     print(self.key)
+    return self.key
 
   ## Print otp
   def show_otp(self):
     print('\n' + self.name, 'OTP:')
     print(self.otp)
+    return self.otp
 
   ## Remove the values of the qubits that were measured on the wrong axis
   def remove_garbage(self, another_axes):

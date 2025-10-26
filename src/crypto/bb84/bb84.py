@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
-# Author: Daniel Escanez-Exposito
+# Author: Francesco Fiorini francesco.fiorini@phd.unipi.it
+# Credits: Daniel Escanez-Exposito (https://github.com/jdanielescanez/quantum-solver)
 
 from quantum_solver.quantum_solver import QuantumSolver
 from crypto.bb84.bb84_algorithm import BB84Algorithm
@@ -12,11 +13,61 @@ from numpy.random import randint
 from random import SystemRandom, randrange
 import string
 from alive_progress import alive_bar
+import pandas as pd
+from math import ceil
 
 BB84_SIMULATOR = 'BB84 SIMULATOR'
+DATA = {
+  'Algorithm': ['BB84'],
+  'Backend': ['-'],
+  'Num_bits': ['-'],
+  'Interception Density': ['-'],
+  'Alice Values': ['-'],
+  'Alice Axes': ['-'],
+  'Eve Values': ['-'],
+  'Eve Axes': ['-'],
+  'Bob Values': ['-'],
+  'Bob Axes': ['-'],
+  'Alice Key': ['-'],
+  'Bob Key': ['-'],
+  'Shared Key': ['-'],
+  'Alice OTP': ['-'],
+  'Bob OTP': ['-'],
+  'Result': ['-'],
+  'Encryption iteration times (ms)': ['-'],
+  'Encryption time (ms)': ['-'],
+  'Interception iteration times (ms)': ['-'],
+  'Interception time (ms)': ['-'],
+  'Decryption iteration times (ms)': ['-'],
+  'Decryption time (ms)': ['-'],
+  'Private key generation time (ms)': ['-'],
+  'Key checking time (ms)': ['-'],
+  'Shared key demonstration time (ms)': ['-'],
+  'Total time (ms)': ['-'],
+  'Shared differences': ['-'],
+  'Shared key length': ['-'],
+  'Shared BER': ['-'],
+  'Full key differences': ['-'],
+  'Full key length': ['-'],
+  'Full key BER': ['-'],
+  'Raw_sifted_errors': ['-'],
+  'Raw_sifted_length': ['-'],
+  'Raw_sifted_QBER': ['-'],
+  'P_sample': ['-'],
+  'ech': ['-'],
+  'Sifted length': ['-'],
+  'Sifting efficiency': ['-'],
+  'Interception realized count': ['-'],
+  'Interception realized ratio': ['-'],
+  'Per-basis sifted length (Z)': ['-'],
+  'Per-basis sifted length (X)': ['-'],
+  'Per-basis QBER (Z)': ['-'],
+  'Per-basis QBER (X)': ['-'],
+  'Attack label': ['-']
+}
 
 ## Main class of BB84 Simulator
-## @see https://qiskit.org/textbook/ch-algorithms/quantum-key-distribution.html
+
 class BB84:
   ## Constructor
   def __init__(self, token):
@@ -61,12 +112,17 @@ class BB84:
     print('[0] Exit\n')
 
   ## Run BB84 simulation once
-  def __run_simulation(self):
-    message = str(input('[&] Message (string): '))
-    density = float(input('[&] Interception Density (float between 0 and 1): '))
+  def __run_simulation(self, message, density,ech):
+    DATA['Num_bits'] = message
+    DATA["Interception Density"] = str(density)
     backend = self.qexecute.current_backend
+    DATA['Backend'] = str(backend)
     N_BITS = 6
-    bits_size = len(message) * 5 * N_BITS
+    # bits_size = len(message) * 5 * N_BITS
+    bits_size = message
+
+    possible_chars = string.ascii_lowercase + string.ascii_uppercase + string.digits
+    message = ''.join(SystemRandom().choice(possible_chars) for _ in range(ceil(message)))
     execution_description = str(self.qexecute.current_backend)
     execution_description += ' with message "'
     execution_description += message + '" and density "' + str(density) + '"'
@@ -75,25 +131,39 @@ class BB84:
     try:
       halo.start()
       start_time = time.time()
-      self.bb84_algorithm.run(message, backend, bits_size, density, N_BITS, True)
+      self.bb84_algorithm.run(message, backend, bits_size, density, N_BITS, True,ech)
       time_ms = (time.time() - start_time) * 1000
       halo.succeed()
-      print('  BB84 simulation runned in', str(time_ms), 'ms')
+      print('  BB84 simulation run in', str(time_ms), 'ms')
+      DATA["Total time (ms)"] = str(time_ms)
+      
+      df1 = pd.read_excel('data.xlsx')
+      df2 = pd.DataFrame([self.bb84_algorithm._normalize_single_row(DATA)])
+      df1.replace('-', pd.NA, inplace=True)
+      df2.replace('-', pd.NA, inplace=True)
+
+      merged_df = df1.combine_first(df2)
+      concat_row = merged_df.iloc[0].to_frame().T
+
+      final_df = pd.read_excel('final_data.xlsx')
+      file_concat = pd.concat([final_df, concat_row], axis=0)
+      file_concat.to_excel('final_data.xlsx', index=False)
+
     except Exception as exception:
       halo.fail()
       print('Exception:', exception)
 
   ## Run an experiment of BB84 simulation
-  def __experimental_mode(self, len_msg_limit=75, density_step=0.05, repetition_instance=30):
-    STEP_MSG = 5
-    DENSITY_MIN = 0
-    DENSITY_MAX = 1
+  def __experimental_mode(self, step_msg=5, len_msg_limit=75, density_step=0.05, density_min=0, density_max=1, repetition_instance=30):
+    STEP_MSG = step_msg
+    DENSITY_MIN = density_min
+    DENSITY_MAX = density_max
     DENSITY_RANGE = int((DENSITY_MAX - DENSITY_MIN) / density_step)
     backend = self.qexecute.current_backend
     possible_chars = string.ascii_lowercase + string.ascii_uppercase + string.digits
     image = np.zeros((DENSITY_RANGE + 1, len_msg_limit // STEP_MSG))
     x = list(range(STEP_MSG, len_msg_limit + 1, STEP_MSG))
-    y = list(np.arange(0, 1 + density_step, density_step))
+    y = list(np.arange(DENSITY_MIN, DENSITY_MAX + density_step, density_step))
     start_time = time.time()
     print('\nRunning BB84 Simulator Experiment (in ' + str(backend) + '):')
 
@@ -104,7 +174,9 @@ class BB84:
             for _ in range(repetition_instance):
               message = ''.join(SystemRandom().choice(possible_chars) for _ in range(len_message))
               bits_size = len(message) * 5
+              # time_start
               flag = self.bb84_algorithm.run(message, backend, bits_size, density, 1, False)
+              # time_end
               image[j][i] += 1 if flag else 0
               bar()
           
@@ -133,10 +205,18 @@ class BB84:
     elif option == 2:
       self.qexecute.select_backend()
     elif option == 3 and self.is_selected_backend:
-      self.__run_simulation()
+      message = int(input('[&] Key length (bits): '))
+      density = float(input('[&] Interception Density (float between 0 and 1): '))
+      numberofiterations=int(input('[&] Number of iterations: '))
+      ech=float(input('[&] Expected System noise error rate: '))
+      for _ in range(numberofiterations):
+        self.__run_simulation(message,density,ech)
     elif option == 4 and self.is_selected_backend:
+      step_msg = int(input('[&] Specify message steps (number of bits): '))
       len_msg_limit = int(input('[&] Specify maximum message length (number of bits): '))
       density_step = float(input('[&] Specify density step: '))
+      density_min = float(input('[&] Specify density min: '))
+      density_max = float(input('[&] Specify density max: '))
       repetition_instance = int(input('[&] Specify number of repetitions for each instance: '))
 
       if len_msg_limit <= 0:
@@ -148,6 +228,6 @@ class BB84:
       else:
         if 1.0 % density_step != 0:
           density_step = 1 / round(1 / density_step)
-        self.__experimental_mode(len_msg_limit, density_step, repetition_instance)
+        self.__experimental_mode(step_msg, len_msg_limit, density_step, density_min, density_max, repetition_instance)
     else:
       print('[!] Invalid option, try again')
