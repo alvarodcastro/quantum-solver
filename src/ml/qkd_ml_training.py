@@ -21,6 +21,8 @@ from sklearn.metrics import (classification_report, confusion_matrix,
                              f1_score, roc_auc_score, roc_curve)
 import matplotlib.pyplot as plt
 import warnings
+
+import os
 warnings.filterwarnings('ignore')
 
 
@@ -35,6 +37,9 @@ def load_and_prepare_data(filepath):
     print("\nColumns in dataset:")
     for col in df.columns:
         print(f"  - {col}")
+
+    # Convert Num_bits to numeric if not already for latter filtering
+    df['Num_bits'] = pd.to_numeric(df['Num_bits'], errors='coerce')
 
 
     # Select important features
@@ -72,6 +77,17 @@ def load_and_prepare_data(filepath):
     X['Key_loss_ratio'] = (X['Raw_sifted_length'] - X['Shared key length']) / (X['Raw_sifted_length'] + 1e-10)
     X['Basis_balance'] = abs(X['Per-basis sifted length (Z)'] - X['Per-basis sifted length (X)']) / \
                          (X['Per-basis sifted length (Z)'] + X['Per-basis sifted length (X)'] + 1e-10)
+    
+    feature_columns += [
+        'QBER_mean',
+        'QBER_std',
+        'QBER_ratio',
+        'QBER_asymmetry',
+        'Error_rate',
+        'Key_loss_ratio',
+        'Basis_balance'
+    ]
+    print(f"Total features after engineering: {len(feature_columns)}")
 
     # Handle NaN and inf values
     X = X.replace([np.inf, -np.inf], np.nan)
@@ -97,18 +113,34 @@ def evaluate_baseline(df):
 
     y_true = df['Attack label'].values
     accuracy = accuracy_score(y_true, baseline_predictions)
+    precision = precision_score(y_true, baseline_predictions, zero_division=0)
+    recall_v = recall_score(y_true, baseline_predictions, zero_division=0)
+    f1 = f1_score(y_true, baseline_predictions, zero_division=0)
 
-    print(f"\nBaseline Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)")
+    print(f"\nBaseline Accuracy:  {accuracy:.4f} ({accuracy*100:.2f}%)")
+    print(f"Baseline Precision: {precision:.4f}")
+    print(f"Baseline Recall:    {recall_v:.4f}")
+    print(f"Baseline F1-Score:  {f1:.4f}")
 
     cm = confusion_matrix(y_true, baseline_predictions)
     print("\nBaseline Confusion Matrix:")
     print(cm)
 
-    return accuracy, baseline_predictions
+    return accuracy, baseline_predictions, recall_v, f1
 
 
 def train_random_forest(X, y, n_estimators=100, max_depth=10):
-    """Train Random Forest classifier with cross-validation."""
+    """Train Random Forest classifier with cross-validation.
+
+    Returns
+    -------
+    rf_model : RandomForestClassifier
+        Trained RF model.
+    feature_importance : pd.DataFrame
+        Feature importances.
+    rf_accuracy : float
+        Accuracy from test split (if len>=100) or CV mean accuracy otherwise.
+    """
     print("\n" + "="*80)
     print("TRAINING RANDOM FOREST CLASSIFIER")
     print("="*80)
@@ -124,6 +156,9 @@ def train_random_forest(X, y, n_estimators=100, max_depth=10):
     )
 
     # For larger datasets, use train-test split
+    rf_accuracy = None
+    rf_recall = None
+
     if len(X) >= 100:
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.2, random_state=42, stratify=y
@@ -138,6 +173,9 @@ def train_random_forest(X, y, n_estimators=100, max_depth=10):
         print(f"  Precision: {precision_score(y_test, y_pred, zero_division=0):.4f}")
         print(f"  Recall:    {recall_score(y_test, y_pred, zero_division=0):.4f}")
         print(f"  F1-Score:  {f1_score(y_test, y_pred, zero_division=0):.4f}")
+
+        rf_accuracy = accuracy_score(y_test, y_pred)
+        rf_recall = recall_score(y_test, y_pred, zero_division=0)
 
         # Feature importance
         feature_importance = pd.DataFrame({
@@ -154,8 +192,16 @@ def train_random_forest(X, y, n_estimators=100, max_depth=10):
         rf_model.fit(X, y)
 
         cv_scores = cross_val_score(rf_model, X, y, cv=min(5, len(X)), 
-                                    scoring='accuracy')
+                        scoring='accuracy')
         print(f"\nCross-validation Accuracy: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
+        rf_accuracy = float(cv_scores.mean())
+        # Approximate recall via CV using scoring='recall' for completeness
+        try:
+            cv_recall = cross_val_score(rf_model, X, y, cv=min(5, len(X)), scoring='recall')
+            rf_recall = float(cv_recall.mean())
+            print(f"Cross-validation Recall:   {rf_recall:.4f} (+/- {cv_recall.std():.4f})")
+        except Exception:
+            rf_recall = None
 
         # Feature importance
         feature_importance = pd.DataFrame({
@@ -166,11 +212,21 @@ def train_random_forest(X, y, n_estimators=100, max_depth=10):
         print("\nTop 10 Most Important Features:")
         print(feature_importance.head(10).to_string(index=False))
 
-    return rf_model, feature_importance
+    return rf_model, feature_importance, rf_accuracy, rf_recall
 
 
 def train_svm(X, y, C=1.0, kernel='rbf'):
-    """Train SVM classifier with cross-validation."""
+    """Train SVM classifier with cross-validation.
+
+    Returns
+    -------
+    svm_model : SVC
+        Trained SVM model.
+    scaler : StandardScaler
+        Fitted scaler for feature standardization.
+    svm_accuracy : float
+        Accuracy from test split (if len>=100) or CV mean accuracy otherwise.
+    """
     print("\n" + "="*80)
     print("TRAINING SUPPORT VECTOR MACHINE (SVM)")
     print("="*80)
@@ -190,6 +246,9 @@ def train_svm(X, y, C=1.0, kernel='rbf'):
     )
 
     # For larger datasets, use train-test split
+    svm_accuracy = None
+    svm_recall = None
+
     if len(X) >= 100:
         X_train, X_test, y_train, y_test = train_test_split(
             X_scaled, y, test_size=0.2, random_state=42, stratify=y
@@ -205,6 +264,9 @@ def train_svm(X, y, C=1.0, kernel='rbf'):
         print(f"  Recall:    {recall_score(y_test, y_pred, zero_division=0):.4f}")
         print(f"  F1-Score:  {f1_score(y_test, y_pred, zero_division=0):.4f}")
 
+        svm_accuracy = accuracy_score(y_test, y_pred)
+        svm_recall = recall_score(y_test, y_pred, zero_division=0)
+
     else:
         # For small datasets, use cross-validation
         print("\nDataset too small for train-test split. Using cross-validation...")
@@ -213,8 +275,14 @@ def train_svm(X, y, C=1.0, kernel='rbf'):
         cv_scores = cross_val_score(svm_model, X_scaled, y, cv=min(5, len(X)), 
                                     scoring='accuracy')
         print(f"\nCross-validation Accuracy: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
-
-    return svm_model, scaler
+        svm_accuracy = float(cv_scores.mean())
+        try:
+            cv_rec = cross_val_score(svm_model, X_scaled, y, cv=min(5, len(X)), scoring='recall')
+            svm_recall = float(cv_rec.mean())
+            print(f"Cross-validation Recall:   {svm_recall:.4f} (+/- {cv_rec.std():.4f})")
+        except Exception:
+            svm_recall = None
+    return svm_model, scaler, svm_accuracy, svm_recall
 
 
 def compare_models(baseline_acc, rf_model, svm_model, X, y):
@@ -237,40 +305,100 @@ def compare_models(baseline_acc, rf_model, svm_model, X, y):
     print("\n")
     print(comparison_df.to_string(index=False))
 
-    print("\n" + "="*80)
-    print("RECOMMENDATIONS")
-    print("="*80)
-    print("\n1. Collect more data (1000-5000 samples) for robust ML training")
-    print("2. Include varying interception densities (0.0 to 1.0)")
-    print("3. Balance classes (50% normal, 50% attack)")
-    print("4. Test on different noise levels")
-    print("5. Consider ensemble methods (combining RF + SVM)")
 
-
-def main():
-    """Main execution function."""
-    # Load data
-    filepath = 'final_data.xlsx'  # Change to your file path
-    X, y, df = load_and_prepare_data(filepath)
-
+def do_training(X, y, df):
     # Evaluate baseline
-    baseline_acc, baseline_preds = evaluate_baseline(df)
+    baseline_acc, baseline_preds, baseline_rec, baseline_f1 = evaluate_baseline(df)
 
     # Train Random Forest
-    rf_model, rf_importance = train_random_forest(X, y)
+    rf_model, rf_importance, rf_acc, rf_rec = train_random_forest(X, y)
 
     # Train SVM
-    svm_model, svm_scaler = train_svm(X, y)
+    svm_model, svm_scaler, svm_acc, svm_rec = train_svm(X, y)
 
-    # Compare models
+    # Compare models (prints)
     compare_models(baseline_acc, rf_model, svm_model, X, y)
 
     print("\n" + "="*80)
     print("TRAINING COMPLETE")
     print("="*80)
 
-    return rf_model, svm_model, svm_scaler, rf_importance
+    return {
+        'baseline_acc': baseline_acc,
+        'baseline_recall': baseline_rec,
+        'baseline_f1': baseline_f1,
+        'rf_acc': rf_acc,
+        'rf_recall': rf_rec,
+        'svm_acc': svm_acc,
+        'svm_recall': svm_rec,
+        'rf_importance': rf_importance
+    }
+
+def main():
+    """Main execution function."""
+    # Load data
+    dataFolder = os.path.join(os.path.dirname(__file__), 'data')
+    filepath = os.path.join(dataFolder, 'final_data.xlsx')  # Change to your file path
+    X, y, df = load_and_prepare_data(filepath)
+
+    ### Do training with full dataset
+    print("\n" + "="*80)
+    print("TRAINING WITH FULL DATASET")
+    print("="*80)
+    full_metrics = do_training(X, y, df)
+
+
+    ### Do training with decreasing Num_bits ranges and compare
+    ranges = [
+        (20, 180),
+        (20, 100),
+        (20, 60),
+        (20, 50),
+        (20, 40),
+        (20, 30),
+        (20, 25)
+    ]
+
+    results = []
+    for low, high in ranges:
+        print("\n" + "="*80)
+        print(f"TRAINING WITH FILTERED DATA (Num_bits between {low} and {high})")
+        print("="*80)
+
+        mask = (df['Num_bits'] >= low) & (df['Num_bits'] <= high)
+        X_f = X[mask].reset_index(drop=True)
+        y_f = y[mask].reset_index(drop=True)
+        df_f = df[mask].reset_index(drop=True)
+
+        print(f"\nFiltered dataset: {X_f.shape[0]} samples with Num_bits between {low}-{high}")
+
+        metrics = do_training(X_f, y_f, df_f)
+        results.append({
+            'Range': f"{low}-{high}",
+            'Samples': int(X_f.shape[0]),
+            'Baseline_Acc': metrics['baseline_acc'],
+            'Baseline_Recall': metrics['baseline_recall'],
+            'Baseline_F1': metrics['baseline_f1'],
+            'RF_Acc': metrics['rf_acc'],
+            'RF_Recall': metrics['rf_recall'],
+            'SVM_Acc': metrics['svm_acc'],
+            'SVM_Recall': metrics['svm_recall'],
+        })
+
+    # Aggregate and print comparison table
+    print("\n" + "="*80)
+    print("ACCURACY COMPARISON ACROSS NUM_BITS RANGES")
+    print("="*80)
+    summary_df = pd.DataFrame(results)
+    print(summary_df.to_string(index=False))
+
+    # Save CSV to data/ml_outputs to align with notebook
+    out_dir = os.path.join(os.path.dirname(__file__), 'data', 'ml_outputs')
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, 'accuracy_comparison_by_num_bits.csv')
+    summary_df.to_csv(out_path, index=False)
+    print(f"\nSaved comparison CSV: {out_path}")
 
 
 if __name__ == "__main__":
-    rf_model, svm_model, scaler, feature_importance = main()
+    main()
