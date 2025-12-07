@@ -4,3 +4,8 @@ dist
 .vscode
 src/quantum_solver.egg-info
 build
+
+
+*ml_outputs/
+
+data/
